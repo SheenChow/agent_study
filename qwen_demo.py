@@ -6,6 +6,7 @@
 
 import json
 import os
+from pathlib import Path
 from typing import Dict, Any
 
 import dashscope
@@ -25,7 +26,18 @@ class QwenAgent:
             api_key: 阿里云API Key，如果不提供则从环境变量读取
             model: 使用的模型名称，默认qwen-turbo
         """
-        load_dotenv()
+        base_dir = Path(__file__).parent
+        env_dev_path = base_dir / ".env-dev"
+        env_path = base_dir / ".env"
+        
+        if env_dev_path.exists():
+            print(f"✅ 从 .env-dev 加载环境变量")
+            load_dotenv(env_dev_path)
+        elif env_path.exists():
+            print(f"✅ 从 .env 加载环境变量")
+            load_dotenv(env_path)
+        else:
+            print("⚠️ 未找到 .env-dev 或 .env 文件")
         
         self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY")
         if not self.api_key:
