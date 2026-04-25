@@ -1,0 +1,8 @@
+# 千问模型Agent推理Demo依赖
+# 安装方式: pip install -r requirements.txt
+
+# 阿里云DashScope SDK (用于调用千问模型)
+dashscope>=1.10.0
+
+# 用于读取环境变量
+python-dotenv>=1.0.0
