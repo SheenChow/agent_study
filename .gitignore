@@ -1,0 +1,42 @@
+# 隐藏文件 - 忽略所有 . 开头的文件
+.*
+
+# 但是不忽略 .gitignore 本身
+!.gitignore
+
+# Python 项目常见忽略文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.PYTHONPATH
+.venv
+env/
+venv/
+ENV/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 日志文件
+*.log
+logs/
+
+# 环境变量文件（包含敏感信息）
+.env
+.env.local
+.env.*.local
+
+# 虚拟环境
+.venv/
+venv/
+env/
