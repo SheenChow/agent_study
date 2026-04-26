@@ -45,10 +45,22 @@
             background-color: #eff6ff;
             border-color: #3b82f6;
         }
+        .session-item:hover .session-delete-btn {
+            opacity: 1;
+        }
+        .session-delete-btn {
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .session-item.active {
+            background-color: #eff6ff;
+            border-color: #3b82f6;
+        }
     </style>
 </head>
 <body class="bg-gray-100 h-screen flex flex-col">
     <!-- 顶部导航栏 -->
+    <nav class="bg-white shadow-sm border-b border-gray-200 px-4 py-3 flex items-center justify-between flex-shrink-0">
     <nav class="bg-white shadow-sm border-b border-gray-200 px-4 py-3 flex items-center justify-between flex-shrink-0">
         <div class="flex items-center space-x-3">
             <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl flex items-center justify-center">
@@ -72,6 +84,58 @@
         </div>
     </nav>
 
+    <!-- 主内容区：双列布局 -->
+    <div class="flex-1 flex overflow-hidden">
+        <!-- 左侧边栏：会话列表 -->
+        <div id="sidebar" class="w-64 bg-white border-r border-gray-200 flex flex-col flex-shrink-0">
+            <!-- 新对话按钮 -->
+            <div class="p-3 border-b border-gray-200">
+                <button id="new-chat-btn" class="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors flex items-center justify-center space-x-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                    </svg>
+                    <span>新对话</span>
+                </button>
+            </div>
+            
+            <!-- 会话列表 -->
+            <div id="session-list" class="flex-1 overflow-y-auto scrollbar-thin p-2 space-y-1">
+            </div>
+        </div>
+
+        <!-- 右侧：聊天区域 -->
+        <div class="flex-1 flex flex-col min-w-0">
+            <!-- 对话区域 -->
+            <div id="chat-container" class="flex-1 overflow-y-auto px-4 py-6 scrollbar-thin">
+                <div id="messages" class="max-w-4xl mx-auto space-y-4">
+                    <!-- 欢迎消息 -->
+                    <div class="flex justify-center" id="welcome-message">
+                        <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 max-w-lg text-center">
+                            <div class="w-16 h-16 bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                                <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+                                </svg>
+                            </div>
+                            <h2 class="text-xl font-semibold text-gray-800 mb-2">欢迎使用 Agent 推理助手</h2>
+                            <p class="text-gray-600 text-sm mb-4">我可以帮助你分析问题、进行逻辑推理。试着问我一些问题吧！</p>
+                            <div class="flex flex-wrap justify-center gap-2">
+                                <button class="quick-question px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm rounded-lg transition-colors">
+                                    如果5台机器5分钟生产5个零件...
+                                </button>
+                                <button class="quick-question px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm rounded-lg transition-colors">
+                                    一个池塘里的荷花，每天面积增长一倍...
+                                </button>
+                                <button class="quick-question px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 text-sm rounded-lg transition-colors border border-blue-200">
+                                    搜索2026年AI大模型最新新闻
+                                </button>
+                                <button class="quick-question px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 text-sm rounded-lg transition-colors border border-blue-200">
+                                    查询2026年北京今天的天气
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
     <!-- 主内容区：双列布局 -->
     <div class="flex-1 flex overflow-hidden">
         <!-- 左侧边栏：会话列表 -->

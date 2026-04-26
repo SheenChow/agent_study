@@ -1,20 +1,25 @@
 /**
  * Agent 推理助手 - 前端聊天逻辑
  * 支持流式输出、推理过程可视化和会话记忆功能
+ * 支持流式输出、推理过程可视化和会话记忆功能
  */
 
 class ChatApp {
     constructor() {
         this.currentSessionId = null;
         this.sessions = [];
+        this.currentSessionId = null;
+        this.sessions = [];
         this.isLoading = false;
         this.currentModel = null;
         this.currentProvider = null;
+        this.currentEventSource = null;
         this.currentEventSource = null;
         
         this.initElements();
         this.initEventListeners();
         this.loadConfig();
+        this.loadSessions();
         this.loadSessions();
     }
     
@@ -35,15 +40,29 @@ class ChatApp {
         this.newChatBtn = document.getElementById('new-chat-btn');
         this.sessionList = document.getElementById('session-list');
         this.welcomeMessage = document.getElementById('welcome-message');
+        
+        this.newChatBtn = document.getElementById('new-chat-btn');
+        this.sessionList = document.getElementById('session-list');
+        this.welcomeMessage = document.getElementById('welcome-message');
     }
     
     initEventListeners() {
-        this.sendBtn.addEventListener('click', () => this.sendMessage());
+        this.sendBtn.addEventListener('click', () => {
+            if (this.isLoading) {
+                this.stopGeneration();
+            } else {
+                this.sendMessage();
+            }
+        });
         
         this.userInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                this.sendMessage();
+                if (this.isLoading) {
+                    this.stopGeneration();
+                } else {
+                    this.sendMessage();
+                }
             }
         });
         
@@ -63,6 +82,22 @@ class ChatApp {
                 this.userInput.focus();
             });
         });
+    }
+    
+    async handleNewChat() {
+        if (this.isLoading) {
+            this.stopGeneration();
+            await this.waitForLoadingToStop();
+        }
+        await this.createNewSession();
+    }
+    
+    async waitForLoadingToStop() {
+        let attempts = 0;
+        while (this.isLoading && attempts < 50) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            attempts++;
+        }
     }
     
     async loadConfig() {
@@ -326,11 +361,11 @@ class ChatApp {
     
     setLoading(loading) {
         this.isLoading = loading;
-        this.sendBtn.disabled = loading;
+        this.sendBtn.disabled = false;
         this.userInput.disabled = loading;
         
         if (loading) {
-            this.sendText.textContent = '思考中...';
+            this.sendText.textContent = '停止';
             this.sendIcon.classList.add('hidden');
             this.loadingIcon.classList.remove('hidden');
             this.sendBtn.classList.add('hidden');
@@ -400,8 +435,10 @@ class ChatApp {
         try {
             const messageParam = encodeURIComponent(message);
             const sessionParam = this.currentSessionId ? `&memory_session_id=${encodeURIComponent(this.currentSessionId)}` : '';
+            const sessionParam = this.currentSessionId ? `&memory_session_id=${encodeURIComponent(this.currentSessionId)}` : '';
             
             const eventSource = new EventSource(
+                `/api/chat/stream?message=${messageParam}${sessionParam}`
                 `/api/chat/stream?message=${messageParam}${sessionParam}`
             );
             
