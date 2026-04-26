@@ -8,18 +8,14 @@ class ChatApp {
     constructor() {
         this.currentSessionId = null;
         this.sessions = [];
-        this.currentSessionId = null;
-        this.sessions = [];
         this.isLoading = false;
         this.currentModel = null;
         this.currentProvider = null;
-        this.currentEventSource = null;
         this.currentEventSource = null;
         
         this.initElements();
         this.initEventListeners();
         this.loadConfig();
-        this.loadSessions();
         this.loadSessions();
     }
     
@@ -36,10 +32,6 @@ class ChatApp {
         this.toast = document.getElementById('toast');
         this.toastIcon = document.getElementById('toast-icon');
         this.toastMessage = document.getElementById('toast-message');
-        
-        this.newChatBtn = document.getElementById('new-chat-btn');
-        this.sessionList = document.getElementById('session-list');
-        this.welcomeMessage = document.getElementById('welcome-message');
         
         this.newChatBtn = document.getElementById('new-chat-btn');
         this.sessionList = document.getElementById('session-list');
@@ -189,15 +181,26 @@ class ChatApp {
         div.addEventListener('click', (e) => {
             const deleteBtn = e.target.closest('.session-delete-btn');
             if (deleteBtn) {
-                e.stopPropagation();
-                const sessionIdToDelete = deleteBtn.dataset.sessionId;
-                if (confirm('确定要删除这个对话吗？')) {
-                    this.deleteSession(sessionIdToDelete);
-                }
-            } else {
-                this.switchSession(session.id);
+                return;
             }
+            this.switchSession(session.id);
         });
+
+        const deleteBtn = div.querySelector('.session-delete-btn');
+        if (deleteBtn) {
+            deleteBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const sessionIdToDelete = session.id;
+                console.log('准备删除会话:', sessionIdToDelete);
+                if (confirm('确定要删除这个对话吗？')) {
+                    console.log('用户确认删除:', sessionIdToDelete);
+                    this.deleteSession(sessionIdToDelete);
+                } else {
+                    console.log('用户取消删除');
+                }
+            });
+        }
         
         return div;
     }
@@ -435,10 +438,8 @@ class ChatApp {
         try {
             const messageParam = encodeURIComponent(message);
             const sessionParam = this.currentSessionId ? `&memory_session_id=${encodeURIComponent(this.currentSessionId)}` : '';
-            const sessionParam = this.currentSessionId ? `&memory_session_id=${encodeURIComponent(this.currentSessionId)}` : '';
             
             const eventSource = new EventSource(
-                `/api/chat/stream?message=${messageParam}${sessionParam}`
                 `/api/chat/stream?message=${messageParam}${sessionParam}`
             );
             
