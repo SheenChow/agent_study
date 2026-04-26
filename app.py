@@ -22,23 +22,27 @@ from agents.llm_agent import (
     DEFAULT_SYSTEM_PROMPT_WITH_TOOLS
 )
 from agents.tools.tool_manager import get_tool_manager, register_default_tools
+from agents.memory import MemoryManager
 
 
 app = Flask(__name__)
 app.secret_key = 'agent-study-secret-key-2026'
 
 config_manager: Optional[ConfigManager] = None
+memory_manager: Optional[MemoryManager] = None
 
 _active_streams: Dict[str, List[StreamChunk]] = {}
 
 
 def init_app():
     """初始化应用"""
-    global config_manager
+    global config_manager, memory_manager
     config_manager = get_config_manager()
+    memory_manager = MemoryManager()
     register_default_tools()
     print("✅ Agent Web 应用初始化完成")
     print(f"✅ 已注册工具: {get_tool_manager().list_tools()}")
+    print("✅ 记忆模块初始化完成")
 
 
 @app.route('/')
@@ -238,15 +242,15 @@ def chat():
 
 @app.route('/api/chat/stream', methods=['GET'])
 def chat_stream():
-    """流式输出接口 (SSE) - 支持工具调用"""
+    """流式输出接口 (SSE) - 支持工具调用和记忆功能"""
     try:
-        session_id = request.args.get('session_id')
+        memory_session_id = request.args.get('memory_session_id')
+        user_message = request.args.get('message', '')
         
-        if not session_id:
-            return jsonify({
-                "success": False,
-                "error": "缺少 session_id 参数"
-            }), 400
+        if not user_message:
+            def error_generator():
+                yield f"data: {json.dumps({'type': 'error', 'content': '消息内容不能为空'})}\n\n"
+            return Response(error_generator(), mimetype='text/event-stream')
         
         app_config = config_manager.get()
         provider_config = config_manager.get_current_provider()
@@ -256,20 +260,10 @@ def chat_stream():
                 yield f"data: {json.dumps({'type': 'error', 'content': 'API Key未配置'})}\n\n"
             return Response(error_generator(), mimetype='text/event-stream')
         
-        messages_str = request.args.get('messages', '[]')
-        try:
-            messages_data = json.loads(messages_str)
-        except:
-            messages_data = []
+        session = memory_manager.get_or_create_session(memory_session_id, title=user_message[:30] if len(user_message) > 30 else user_message)
+        actual_session_id = session.id
         
-        user_message = request.args.get('message', '')
-        
-        history = []
-        for item in messages_data:
-            history.append(ChatMessage(
-                role=item.get('role', 'user'),
-                content=item.get('content', '')
-            ))
+        history = memory_manager.get_context(actual_session_id)
         
         service = get_llm_service(
             provider=app_config.current_provider,
@@ -282,6 +276,8 @@ def chat_stream():
         
         def generate():
             try:
+                memory_manager.save_user_message(actual_session_id, user_message)
+                
                 agent = AgentWithTools(
                     llm_service=service,
                     model=provider_config.default_model,
@@ -289,11 +285,29 @@ def chat_stream():
                     tool_manager=tool_manager
                 )
                 
+                full_content = ''
+                tool_calls_list = []
+                saved_tool_messages = []
+                
                 for event in agent.chat_stream(
                     user_message=user_message,
                     history=history
                 ):
                     event_dict = event.to_dict()
+                    
+                    if event.event_type == 'text' and event.content:
+                        full_content += event.content
+                    
+                    if event.event_type == 'done':
+                        memory_manager.save_assistant_message(
+                            actual_session_id,
+                            content=full_content,
+                            tool_calls=tool_calls_list if tool_calls_list else None,
+                            usage=event.metadata.get('usage') if event.metadata else None
+                        )
+                        
+                        event_dict['memory_session_id'] = actual_session_id
+                    
                     yield f"data: {json.dumps(event_dict, ensure_ascii=False)}\n\n"
                     
             except Exception as e:
@@ -363,6 +377,115 @@ def test_connection():
                 "error": "连接测试失败，API Key无效或服务不可用"
             })
         
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route('/api/sessions', methods=['GET'])
+def get_sessions():
+    """获取会话列表"""
+    try:
+        sessions = memory_manager.list_sessions(limit=50)
+        return jsonify({
+            "success": True,
+            "data": sessions
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route('/api/sessions', methods=['POST'])
+def create_session():
+    """创建新会话"""
+    try:
+        data = request.get_json() or {}
+        title = data.get('title', '新对话')
+        
+        session = memory_manager.create_session(title=title)
+        
+        return jsonify({
+            "success": True,
+            "data": session.to_dict()
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route('/api/sessions/<session_id>', methods=['GET'])
+def get_session(session_id: str):
+    """获取会话详情（含消息）"""
+    try:
+        session_data = memory_manager.get_session_with_messages(session_id)
+        
+        if session_data is None:
+            return jsonify({
+                "success": False,
+                "error": "会话不存在"
+            }), 404
+        
+        return jsonify({
+            "success": True,
+            "data": session_data
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route('/api/sessions/<session_id>', methods=['PUT'])
+def update_session(session_id: str):
+    """更新会话"""
+    try:
+        data = request.get_json() or {}
+        title = data.get('title')
+        
+        if title:
+            success = memory_manager.update_session_title(session_id, title)
+            if success:
+                session = memory_manager.get_session(session_id)
+                return jsonify({
+                    "success": True,
+                    "data": session.to_dict() if session else None
+                })
+        
+        return jsonify({
+            "success": False,
+            "error": "更新失败"
+        }), 400
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route('/api/sessions/<session_id>', methods=['DELETE'])
+def delete_session(session_id: str):
+    """删除会话"""
+    try:
+        success = memory_manager.delete_session(session_id)
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "message": "会话已删除"
+            })
+        
+        return jsonify({
+            "success": False,
+            "error": "会话不存在"
+        }), 404
     except Exception as e:
         return jsonify({
             "success": False,
