@@ -35,12 +35,37 @@ class ChatResult:
 
 @dataclass
 class StreamChunk:
-    """流式输出块"""
+    """流式输出块（旧版，保留兼容）"""
     type: str
     content: str
     done: bool = False
     usage: Optional[Dict[str, int]] = None
     tool_call: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class StreamEvent:
+    """流式事件（新版，支持更多事件类型）
+    
+    事件类型：
+    - thinking: LLM 正在分析问题、判断是否需要工具
+    - planning: LLM 决定如何处理问题
+    - tool_call: 正在调用工具
+    - tool_result: 工具执行完成
+    - text: 最终答案的字符（流式）
+    - done: 整个过程完成
+    - error: 发生错误
+    """
+    event_type: str
+    content: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "type": self.event_type,
+            "content": self.content,
+            **self.metadata
+        }
 
 
 @dataclass
@@ -723,9 +748,17 @@ class AgentWithTools:
     def chat_stream(self,
                     user_message: str,
                     history: List[ChatMessage] = None,
-                    step_callback: Callable[[AgentStep], None] = None) -> Generator[StreamChunk, None, None]:
+                    step_callback: Callable[[AgentStep], None] = None) -> Generator[StreamEvent, None, None]:
         """
-        流式对话（带工具调用能力）
+        真正的流式对话（带工具调用能力）
+        
+        实时推送事件：
+        - thinking: LLM 正在分析问题
+        - planning: LLM 决定如何处理问题
+        - tool_call: 正在调用工具
+        - tool_result: 工具执行完成
+        - text: 最终答案的字符（流式）
+        - done: 整个过程完成
         
         Args:
             user_message: 用户消息
@@ -733,34 +766,146 @@ class AgentWithTools:
             step_callback: 步骤回调函数
             
         Yields:
-            StreamChunk: 流式输出块
+            StreamEvent: 流式事件
         """
         messages = history.copy() if history else []
+        messages.append(ChatMessage(role="user", content=user_message))
         
-        result = self.chat(
-            user_message=user_message,
-            history=history,
-            stream=False,
-            step_callback=step_callback
+        total_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        tools_def = self.tool_manager.get_tools_definition()
+        has_tools = len(tools_def) > 0
+        
+        yield StreamEvent(
+            event_type="thinking",
+            content="正在分析问题..."
         )
         
-        if result.success:
-            for char in result.final_answer:
-                yield StreamChunk(
-                    type="text",
-                    content=char,
-                    done=False
-                )
+        result = self.llm_service.chat(
+            messages=messages,
+            model=self.model,
+            stream=False,
+            system_prompt=self.system_prompt,
+            tools=tools_def if has_tools else None
+        )
+        
+        total_usage["input_tokens"] += result.usage.get("input_tokens", 0)
+        total_usage["output_tokens"] += result.usage.get("output_tokens", 0)
+        total_usage["total_tokens"] += result.usage.get("total_tokens", 0)
+        
+        if result.tool_calls:
+            tool_name = result.tool_calls[0].get("function", {}).get("name", "")
+            yield StreamEvent(
+                event_type="planning",
+                content=f"需要使用 {tool_name} 工具获取实时信息...",
+                metadata={"tool": tool_name}
+            )
             
-            yield StreamChunk(
-                type="done",
-                content="",
-                done=True,
-                usage=result.usage
+            assistant_msg = ChatMessage(
+                role="assistant",
+                content=result.content,
+                tool_calls=result.tool_calls
             )
-        else:
-            yield StreamChunk(
-                type="error",
-                content=result.error_message or "执行失败",
-                done=True
-            )
+            messages.append(assistant_msg)
+            
+            for tool_call_data in result.tool_calls:
+                try:
+                    tool_call = ToolCallInfo(
+                        id=tool_call_data.get("id", str(uuid.uuid4())),
+                        name=tool_call_data.get("function", {}).get("name", ""),
+                        arguments=json.loads(tool_call_data.get("function", {}).get("arguments", "{}"))
+                    )
+                    
+                    query = tool_call.arguments.get("query", "")
+                    yield StreamEvent(
+                        event_type="tool_call",
+                        content=f"正在搜索: \"{query}\"...",
+                        metadata={
+                            "tool": tool_call.name,
+                            "query": query,
+                            "arguments": tool_call.arguments
+                        }
+                    )
+                    
+                    step = AgentStep(
+                        step_type="tool_call",
+                        content=f"正在调用工具: {tool_call.name}",
+                        tool_name=tool_call.name,
+                        tool_arguments=tool_call.arguments
+                    )
+                    if step_callback:
+                        step_callback(step)
+                    
+                    tool_result = self.tool_manager.execute_tool(
+                        tool_call.name,
+                        **tool_call.arguments
+                    )
+                    
+                    result_count = len(tool_result.metadata.get("results", [])) if tool_result.metadata else 0
+                    yield StreamEvent(
+                        event_type="tool_result",
+                        content=f"搜索完成，找到 {result_count} 条结果",
+                        metadata={
+                            "tool": tool_call.name,
+                            "success": tool_result.success,
+                            "result_count": result_count
+                        }
+                    )
+                    
+                    step = AgentStep(
+                        step_type="tool_result",
+                        content=f"工具执行完成: {tool_call.name}",
+                        tool_name=tool_call.name,
+                        tool_result=tool_result.content if tool_result.success else tool_result.error
+                    )
+                    if step_callback:
+                        step_callback(step)
+                    
+                    tool_msg = ChatMessage(
+                        role="tool",
+                        content=tool_result.content if tool_result.success else json.dumps({"error": tool_result.error}),
+                        tool_call_id=tool_call.id,
+                        name=tool_call.name
+                    )
+                    messages.append(tool_msg)
+                    
+                except Exception as e:
+                    error_msg = f"工具调用处理失败: {str(e)}"
+                    yield StreamEvent(
+                        event_type="error",
+                        content=error_msg
+                    )
+                    
+                    tool_msg = ChatMessage(
+                        role="tool",
+                        content=json.dumps({"error": error_msg}),
+                        tool_call_id=tool_call_data.get("id", ""),
+                        name=tool_call_data.get("function", {}).get("name", "")
+                    )
+                    messages.append(tool_msg)
+        
+        yield StreamEvent(
+            event_type="thinking",
+            content="正在根据信息生成回答..."
+        )
+        
+        for chunk in self.llm_service.chat(
+            messages=messages,
+            model=self.model,
+            stream=True,
+            system_prompt=self.system_prompt
+        ):
+            if hasattr(chunk, 'content') and chunk.content:
+                yield StreamEvent(
+                    event_type="text",
+                    content=chunk.content
+                )
+            if hasattr(chunk, 'usage') and chunk.usage:
+                total_usage["input_tokens"] += chunk.usage.get("input_tokens", 0)
+                total_usage["output_tokens"] += chunk.usage.get("output_tokens", 0)
+                total_usage["total_tokens"] += chunk.usage.get("total_tokens", 0)
+        
+        yield StreamEvent(
+            event_type="done",
+            content="",
+            metadata={"usage": total_usage}
+        )

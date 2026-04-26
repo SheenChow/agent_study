@@ -1,6 +1,6 @@
 /**
  * Agent 推理助手 - 前端聊天逻辑
- * 支持工具调用可视化
+ * 支持流式输出和推理过程可视化
  */
 
 class ChatApp {
@@ -112,6 +112,12 @@ class ChatApp {
         const assistantMessageEl = this.addMessage('assistant', '');
         this.setLoading(true);
         
+        let thinkingDiv = null;
+        let planningDiv = null;
+        let toolCallDiv = null;
+        let fullContent = '';
+        let hasToolCall = false;
+        
         try {
             const messagesForApi = this.messages.map(msg => ({
                 role: msg.role,
@@ -125,41 +131,66 @@ class ChatApp {
                 `/api/chat/stream?session_id=${Date.now()}&messages=${messagesParam}&message=${messageParam}`
             );
             
-            let fullContent = '';
-            let toolStatusDiv = null;
-            
             eventSource.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
+                    console.log('收到事件:', data);
                     
-                    if (data.type === 'tool_call') {
-                        toolStatusDiv = this.addToolStatus(assistantMessageEl, 'calling', data.tool, data.query);
-                    } else if (data.type === 'tool_result') {
-                        if (toolStatusDiv) {
-                            this.updateToolStatus(toolStatusDiv, 'done', data.tool, data.success, data.result_count);
-                        }
-                    } else if (data.type === 'text' && data.content) {
-                        if (toolStatusDiv && !fullContent) {
-                            this.addSeparator(assistantMessageEl);
-                        }
-                        fullContent += data.content;
-                        this.updateMessageContent(assistantMessageEl, fullContent);
-                    } else if (data.type === 'done') {
-                        eventSource.close();
-                        this.messages.push({
-                            role: 'assistant',
-                            content: fullContent
-                        });
-                        this.setLoading(false);
-                        
-                        if (data.usage) {
-                            console.log('Token使用:', data.usage);
-                        }
-                    } else if (data.type === 'error') {
-                        eventSource.close();
-                        this.updateMessageContent(assistantMessageEl, `❌ 错误: ${data.content}`);
-                        this.setLoading(false);
-                        this.showToast(data.content, 'error');
+                    switch (data.type) {
+                        case 'thinking':
+                            thinkingDiv = this.addThinking(assistantMessageEl, data.content);
+                            break;
+                            
+                        case 'planning':
+                            planningDiv = this.addPlanning(assistantMessageEl, data.content, data.tool);
+                            break;
+                            
+                        case 'tool_call':
+                            hasToolCall = true;
+                            toolCallDiv = this.addToolCall(assistantMessageEl, data.tool, data.query);
+                            break;
+                            
+                        case 'tool_result':
+                            if (toolCallDiv) {
+                                this.updateToolResult(toolCallDiv, data.tool, data.success, data.result_count);
+                            }
+                            break;
+                            
+                        case 'text':
+                            if (data.content) {
+                                if (hasToolCall && !fullContent) {
+                                    this.addSeparator(assistantMessageEl);
+                                }
+                                if (thinkingDiv) {
+                                    thinkingDiv.classList.add('hidden');
+                                    thinkingDiv = null;
+                                }
+                                fullContent += data.content;
+                                this.updateMessageContent(assistantMessageEl, fullContent);
+                            }
+                            break;
+                            
+                        case 'done':
+                            eventSource.close();
+                            if (fullContent) {
+                                this.messages.push({
+                                    role: 'assistant',
+                                    content: fullContent
+                                });
+                            }
+                            this.setLoading(false);
+                            
+                            if (data.usage) {
+                                console.log('Token使用:', data.usage);
+                            }
+                            break;
+                            
+                        case 'error':
+                            eventSource.close();
+                            this.updateMessageContent(assistantMessageEl, `❌ 错误: ${data.content}`);
+                            this.setLoading(false);
+                            this.showToast(data.content, 'error');
+                            break;
                     }
                 } catch (e) {
                     console.error('解析消息失败:', e);
@@ -186,85 +217,186 @@ class ChatApp {
         }
     }
     
-    addToolStatus(messageEl, status, toolName, query) {
+    addThinking(messageEl, content) {
         const bubbleDiv = messageEl.querySelector('.message-bubble');
         if (!bubbleDiv) return null;
         
-        let statusContainer = bubbleDiv.querySelector('.tool-status-container');
-        if (!statusContainer) {
-            statusContainer = document.createElement('div');
-            statusContainer.className = 'tool-status-container';
+        let thinkingContainer = bubbleDiv.querySelector('.thinking-container');
+        if (!thinkingContainer) {
+            thinkingContainer = document.createElement('div');
+            thinkingContainer.className = 'thinking-container mb-2';
             const contentDiv = bubbleDiv.querySelector('.message-content');
             if (contentDiv) {
-                bubbleDiv.insertBefore(statusContainer, contentDiv);
+                bubbleDiv.insertBefore(thinkingContainer, contentDiv);
             } else {
-                bubbleDiv.appendChild(statusContainer);
+                bubbleDiv.appendChild(thinkingContainer);
             }
         }
         
-        const toolDiv = document.createElement('div');
-        toolDiv.className = 'tool-status-item mb-2 p-2 bg-gray-50 rounded-lg border border-gray-200';
-        
-        let iconHtml = '';
-        let statusText = '';
-        
-        if (toolName === 'web_search') {
-            iconHtml = `<svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-            </svg>`;
-            statusText = `正在搜索: "${query}"`;
-        } else {
-            iconHtml = `<svg class="w-4 h-4 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
-            </svg>`;
-            statusText = `正在调用工具: ${toolName}`;
-        }
-        
-        toolDiv.innerHTML = `
+        const thinkingDiv = document.createElement('div');
+        thinkingDiv.className = 'p-2 bg-gray-50 rounded-lg border border-gray-200 mb-2';
+        thinkingDiv.innerHTML = `
             <div class="flex items-center space-x-2">
                 <div class="flex-shrink-0">
-                    ${iconHtml}
+                    <svg class="w-4 h-4 text-gray-500 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+                    </svg>
                 </div>
                 <div class="flex-1 min-w-0">
-                    <p class="text-sm text-gray-600 truncate">
+                    <p class="text-sm text-gray-500">
                         <span class="inline-flex items-center">
-                            <span class="animate-pulse mr-1">🔄</span>
-                            ${statusText}
+                            <span class="animate-pulse mr-1">💭</span>
+                            ${this.escapeHtml(content)}
                         </span>
                     </p>
                 </div>
             </div>
         `;
         
-        statusContainer.appendChild(toolDiv);
+        thinkingContainer.appendChild(thinkingDiv);
         this.scrollToBottom();
         
-        return toolDiv;
+        return thinkingDiv;
     }
     
-    updateToolStatus(toolDiv, status, toolName, success, resultCount) {
-        if (!toolDiv) return;
+    addPlanning(messageEl, content, tool) {
+        const bubbleDiv = messageEl.querySelector('.message-bubble');
+        if (!bubbleDiv) return null;
+        
+        let thinkingContainer = bubbleDiv.querySelector('.thinking-container');
+        if (!thinkingContainer) {
+            thinkingContainer = document.createElement('div');
+            thinkingContainer.className = 'thinking-container mb-2';
+            const contentDiv = bubbleDiv.querySelector('.message-content');
+            if (contentDiv) {
+                bubbleDiv.insertBefore(thinkingContainer, contentDiv);
+            } else {
+                bubbleDiv.appendChild(thinkingContainer);
+            }
+        }
+        
+        const planningDiv = document.createElement('div');
+        planningDiv.className = 'p-2 bg-blue-50 rounded-lg border border-blue-200 mb-2';
+        
+        let iconHtml = '';
+        if (tool === 'web_search') {
+            iconHtml = `<svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>`;
+        } else {
+            iconHtml = `<svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+            </svg>`;
+        }
+        
+        planningDiv.innerHTML = `
+            <div class="flex items-center space-x-2">
+                <div class="flex-shrink-0">
+                    ${iconHtml}
+                </div>
+                <div class="flex-1 min-w-0">
+                    <p class="text-sm text-blue-700">
+                        <span class="font-medium">📋 规划：</span>
+                        ${this.escapeHtml(content)}
+                    </p>
+                </div>
+            </div>
+        `;
+        
+        thinkingContainer.appendChild(planningDiv);
+        this.scrollToBottom();
+        
+        return planningDiv;
+    }
+    
+    addToolCall(messageEl, toolName, query) {
+        const bubbleDiv = messageEl.querySelector('.message-bubble');
+        if (!bubbleDiv) return null;
+        
+        let thinkingContainer = bubbleDiv.querySelector('.thinking-container');
+        if (!thinkingContainer) {
+            thinkingContainer = document.createElement('div');
+            thinkingContainer.className = 'thinking-container mb-2';
+            const contentDiv = bubbleDiv.querySelector('.message-content');
+            if (contentDiv) {
+                bubbleDiv.insertBefore(thinkingContainer, contentDiv);
+            } else {
+                bubbleDiv.appendChild(thinkingContainer);
+            }
+        }
+        
+        const toolCallDiv = document.createElement('div');
+        toolCallDiv.className = 'p-2 bg-amber-50 rounded-lg border border-amber-200 mb-2';
+        toolCallDiv.dataset.tool = toolName;
+        
+        let iconHtml = '';
+        let displayName = '';
+        
+        if (toolName === 'web_search') {
+            iconHtml = `<svg class="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>`;
+            displayName = '搜索';
+        } else {
+            iconHtml = `<svg class="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37.996.608 2.296.07 2.572-1.065z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+            </svg>`;
+            displayName = toolName;
+        }
+        
+        toolCallDiv.innerHTML = `
+            <div class="flex items-center space-x-2">
+                <div class="flex-shrink-0">
+                    <span class="inline-block w-4 h-4 border-2 border-amber-600 border-t-transparent rounded-full animate-spin"></span>
+                </div>
+                <div class="flex-1 min-w-0">
+                    <p class="text-sm text-amber-700">
+                        <span class="font-medium">🔍 ${displayName}中：</span>
+                        "${this.escapeHtml(query || '')}"
+                    </p>
+                </div>
+            </div>
+        `;
+        
+        thinkingContainer.appendChild(toolCallDiv);
+        this.scrollToBottom();
+        
+        return toolCallDiv;
+    }
+    
+    updateToolResult(toolCallDiv, toolName, success, resultCount) {
+        if (!toolCallDiv) return;
         
         let iconHtml = '';
         let statusText = '';
+        let statusClass = '';
         
         if (success) {
-            iconHtml = `<svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            iconHtml = `<svg class="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
             </svg>`;
-            statusText = `搜索完成，找到 ${resultCount} 条结果`;
+            statusText = `完成，找到 ${resultCount || 0} 条结果`;
+            statusClass = 'text-green-700';
+            toolCallDiv.className = 'p-2 bg-green-50 rounded-lg border border-green-200 mb-2';
         } else {
-            iconHtml = `<svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            iconHtml = `<svg class="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
             </svg>`;
-            statusText = `工具执行失败`;
+            statusText = '执行失败';
+            statusClass = 'text-red-700';
+            toolCallDiv.className = 'p-2 bg-red-50 rounded-lg border border-red-200 mb-2';
         }
         
-        const pElement = toolDiv.querySelector('p');
+        const pElement = toolCallDiv.querySelector('p');
         if (pElement) {
-            pElement.innerHTML = `<span class="inline-flex items-center">${iconHtml}<span class="ml-1">${statusText}</span></span>`;
-            pElement.className = 'text-sm ' + (success ? 'text-green-600' : 'text-red-600');
+            pElement.innerHTML = `<span class="font-medium">✅ 搜索${statusText}</span>`;
+            pElement.className = `text-sm ${statusClass}`;
+        }
+        
+        const spinner = toolCallDiv.querySelector('.animate-spin');
+        if (spinner) {
+            spinner.outerHTML = iconHtml;
         }
         
         this.scrollToBottom();
@@ -276,12 +408,12 @@ class ChatApp {
         
         const separator = document.createElement('div');
         separator.className = 'my-2 border-t border-gray-200';
-        separator.innerHTML = '<div class="text-center text-xs text-gray-400 my-1">— 搜索结果 —</div>';
+        separator.innerHTML = '<div class="text-center text-xs text-gray-400 my-1">— 以上是搜索过程 —</div>';
         
         const contentDiv = bubbleDiv.querySelector('.message-content');
         if (contentDiv) {
-            const statusContainer = bubbleDiv.querySelector('.tool-status-container');
-            if (statusContainer) {
+            const thinkingContainer = bubbleDiv.querySelector('.thinking-container');
+            if (thinkingContainer) {
                 bubbleDiv.insertBefore(separator, contentDiv);
             }
         }

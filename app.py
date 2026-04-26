@@ -16,6 +16,7 @@ from agents.llm_agent import (
     LLMService,
     ChatMessage,
     StreamChunk,
+    StreamEvent,
     AgentWithTools,
     AgentStep,
     DEFAULT_SYSTEM_PROMPT_WITH_TOOLS
@@ -281,31 +282,6 @@ def chat_stream():
         
         def generate():
             try:
-                events = []
-                import re
-                
-                def capture_step(step: AgentStep):
-                    if step.step_type == "tool_call":
-                        events.append({
-                            "type": "tool_call",
-                            "tool": step.tool_name,
-                            "query": step.tool_arguments.get("query", "") if step.tool_arguments else "",
-                            "arguments": step.tool_arguments
-                        })
-                    elif step.step_type == "tool_result":
-                        result_count = 5
-                        if step.tool_result:
-                            match = re.search(r'共[（(]\s*(\d+)\s*[)）]\s*条', step.tool_result)
-                            if match:
-                                result_count = int(match.group(1))
-                        
-                        events.append({
-                            "type": "tool_result",
-                            "tool": step.tool_name,
-                            "success": "错误" not in (step.tool_result or ""),
-                            "result_count": result_count
-                        })
-                
                 agent = AgentWithTools(
                     llm_service=service,
                     model=provider_config.default_model,
@@ -313,30 +289,19 @@ def chat_stream():
                     tool_manager=tool_manager
                 )
                 
-                result = agent.chat(
+                for event in agent.chat_stream(
                     user_message=user_message,
-                    history=history,
-                    step_callback=capture_step
-                )
-                
-                for event in events:
-                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                
-                if result.success:
-                    for char in result.final_answer:
-                        yield f"data: {json.dumps({'type': 'text', 'content': char, 'done': False}, ensure_ascii=False)}\n\n"
-                    
-                    yield f"data: {json.dumps({'type': 'done', 'content': '', 'done': True, 'usage': result.usage}, ensure_ascii=False)}\n\n"
-                else:
-                    yield f"data: {json.dumps({'type': 'error', 'content': result.error_message or '执行失败', 'done': True}, ensure_ascii=False)}\n\n"
+                    history=history
+                ):
+                    event_dict = event.to_dict()
+                    yield f"data: {json.dumps(event_dict, ensure_ascii=False)}\n\n"
                     
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 error_data = {
                     "type": "error",
-                    "content": str(e),
-                    "done": True
+                    "content": str(e)
                 }
                 yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
         
