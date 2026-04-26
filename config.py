@@ -351,19 +351,19 @@ class ConfigManager:
         }
     
     def _load_api_key_from_env(self):
-        """从环境变量加载API Key"""
+        """从环境变量加载API Key（环境变量优先覆盖配置文件）"""
         if self._config is None:
             return
         
         qwen_config = self._config.providers.get("qwen")
-        if qwen_config and not qwen_config.api_key:
+        if qwen_config:
             env_key = os.getenv("DASHSCOPE_API_KEY", "")
             if env_key:
                 qwen_config.api_key = env_key
                 print("✅ 从环境变量加载了千问API Key")
         
         openai_config = self._config.providers.get("openai")
-        if openai_config and not openai_config.api_key:
+        if openai_config:
             env_key = os.getenv("OPENAI_API_KEY", "")
             if env_key:
                 openai_config.api_key = env_key
