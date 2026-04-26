@@ -559,6 +559,23 @@ def get_llm_service(provider: str = "qwen", api_key: str = None) -> BaseLLMServi
 
 DEFAULT_SYSTEM_PROMPT_WITH_TOOLS = """你是一个智能推理助手，可以使用工具来获取实时信息。
 
+当前日期：2026年4月26日
+当前时间：请根据当前日期判断时效性问题。
+
+重要提示：
+1. 你的知识截止日期可能早于当前日期，对于时效性问题请务必搜索确认
+2. 如果问题涉及"今天"、"最新"、"现在"、"2026年"等时效性词汇，请先搜索
+3. 不要假设当前时间，使用 web_search 工具获取实时信息
+
+回答格式要求（ReAct 模式）：
+在回答时，请先输出你的思考过程，然后再决定是否调用工具。
+
+思考过程示例：
+Thought: 用户问的是2026年的问题，这是一个时效性问题，我需要搜索最新信息。
+Thought: 我的知识截止日期可能不够新，应该调用 web_search 工具。
+
+然后调用工具或直接回答。
+
 使用规则：
 1. 对于时效性问题（如新闻、天气、实时数据、当前事件等），请先使用 web_search 工具搜索最新信息
 2. 对于常识性问题或历史知识，可以直接回答，不需要使用工具
@@ -753,7 +770,7 @@ class AgentWithTools:
         真正的流式对话（带工具调用能力）
         
         实时推送事件：
-        - thinking: LLM 正在分析问题
+        - thinking: LLM 正在分析问题（显示实际思考内容）
         - planning: LLM 决定如何处理问题
         - tool_call: 正在调用工具
         - tool_result: 工具执行完成
@@ -777,7 +794,8 @@ class AgentWithTools:
         
         yield StreamEvent(
             event_type="thinking",
-            content="正在分析问题..."
+            content="正在分析问题...",
+            metadata={"status": "processing"}
         )
         
         result = self.llm_service.chat(
@@ -792,13 +810,22 @@ class AgentWithTools:
         total_usage["output_tokens"] += result.usage.get("output_tokens", 0)
         total_usage["total_tokens"] += result.usage.get("total_tokens", 0)
         
+        if result.content and result.content.strip():
+            yield StreamEvent(
+                event_type="thinking",
+                content=result.content,
+                metadata={"status": "complete"}
+            )
+        
         if result.tool_calls:
             tool_name = result.tool_calls[0].get("function", {}).get("name", "")
-            yield StreamEvent(
-                event_type="planning",
-                content=f"需要使用 {tool_name} 工具获取实时信息...",
-                metadata={"tool": tool_name}
-            )
+            
+            if not (result.content and result.content.strip()):
+                yield StreamEvent(
+                    event_type="planning",
+                    content=f"需要使用 {tool_name} 工具获取实时信息...",
+                    metadata={"tool": tool_name}
+                )
             
             assistant_msg = ChatMessage(
                 role="assistant",
@@ -885,7 +912,8 @@ class AgentWithTools:
         
         yield StreamEvent(
             event_type="thinking",
-            content="正在根据信息生成回答..."
+            content="正在根据信息生成回答...",
+            metadata={"status": "processing"}
         )
         
         for chunk in self.llm_service.chat(

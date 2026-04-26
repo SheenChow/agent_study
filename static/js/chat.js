@@ -138,7 +138,20 @@ class ChatApp {
                     
                     switch (data.type) {
                         case 'thinking':
-                            thinkingDiv = this.addThinking(assistantMessageEl, data.content);
+                            const status = data.status || (data.metadata ? data.metadata.status : null);
+                            const content = data.content;
+                            
+                            if (content === '正在分析问题...' || content === '正在根据信息生成回答...') {
+                                if (!thinkingDiv) {
+                                    thinkingDiv = this.addThinking(assistantMessageEl, content, 'processing');
+                                }
+                            } else {
+                                if (thinkingDiv && status === 'complete') {
+                                    this.updateThinking(thinkingDiv, content, 'complete');
+                                } else {
+                                    thinkingDiv = this.addThinking(assistantMessageEl, content, status || 'complete');
+                                }
+                            }
                             break;
                             
                         case 'planning':
@@ -160,10 +173,6 @@ class ChatApp {
                             if (data.content) {
                                 if (hasToolCall && !fullContent) {
                                     this.addSeparator(assistantMessageEl);
-                                }
-                                if (thinkingDiv) {
-                                    thinkingDiv.classList.add('hidden');
-                                    thinkingDiv = null;
                                 }
                                 fullContent += data.content;
                                 this.updateMessageContent(assistantMessageEl, fullContent);
@@ -217,7 +226,7 @@ class ChatApp {
         }
     }
     
-    addThinking(messageEl, content) {
+    addThinking(messageEl, content, status = 'processing') {
         const bubbleDiv = messageEl.querySelector('.message-bubble');
         if (!bubbleDiv) return null;
         
@@ -234,19 +243,29 @@ class ChatApp {
         }
         
         const thinkingDiv = document.createElement('div');
-        thinkingDiv.className = 'p-2 bg-gray-50 rounded-lg border border-gray-200 mb-2';
+        thinkingDiv.className = `p-2 rounded-lg border mb-2 ${status === 'processing' ? 'bg-gray-50 border-gray-200' : 'bg-green-50 border-green-200'}`;
+        
+        const pulseClass = status === 'processing' ? 'animate-pulse' : '';
+        const iconColor = status === 'processing' ? 'text-gray-500' : 'text-green-600';
+        const textColor = status === 'processing' ? 'text-gray-500' : 'text-green-700';
+        const iconSvg = status === 'processing' 
+            ? `<svg class="w-4 h-4 ${iconColor} animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+               </svg>`
+            : `<svg class="w-4 h-4 ${iconColor}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+               </svg>`;
+        
         thinkingDiv.innerHTML = `
-            <div class="flex items-center space-x-2">
-                <div class="flex-shrink-0">
-                    <svg class="w-4 h-4 text-gray-500 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
-                    </svg>
+            <div class="flex items-start space-x-2">
+                <div class="flex-shrink-0 mt-0.5">
+                    ${iconSvg}
                 </div>
                 <div class="flex-1 min-w-0">
-                    <p class="text-sm text-gray-500">
-                        <span class="inline-flex items-center">
-                            <span class="animate-pulse mr-1">💭</span>
-                            ${this.escapeHtml(content)}
+                    <p class="text-sm ${textColor}">
+                        <span class="inline-flex items-start">
+                            <span class="${pulseClass} mr-1">💭</span>
+                            <span class="whitespace-pre-wrap">${this.escapeHtml(content)}</span>
                         </span>
                     </p>
                 </div>
@@ -257,6 +276,40 @@ class ChatApp {
         this.scrollToBottom();
         
         return thinkingDiv;
+    }
+    
+    updateThinking(thinkingDiv, content, status = 'complete') {
+        if (!thinkingDiv) return;
+        
+        const bubbleClass = status === 'processing' ? 'bg-gray-50 border-gray-200' : 'bg-green-50 border-green-200';
+        const iconColor = status === 'processing' ? 'text-gray-500' : 'text-green-600';
+        const textColor = status === 'processing' ? 'text-gray-500' : 'text-green-700';
+        const iconSvg = status === 'processing' 
+            ? `<svg class="w-4 h-4 ${iconColor} animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+               </svg>`
+            : `<svg class="w-4 h-4 ${iconColor}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+               </svg>`;
+        
+        thinkingDiv.className = `p-2 rounded-lg border mb-2 ${bubbleClass}`;
+        thinkingDiv.innerHTML = `
+            <div class="flex items-start space-x-2">
+                <div class="flex-shrink-0 mt-0.5">
+                    ${iconSvg}
+                </div>
+                <div class="flex-1 min-w-0">
+                    <p class="text-sm ${textColor}">
+                        <span class="inline-flex items-start">
+                            <span class="mr-1">💭</span>
+                            <span class="whitespace-pre-wrap">${this.escapeHtml(content)}</span>
+                        </span>
+                    </p>
+                </div>
+            </div>
+        `;
+        
+        this.scrollToBottom();
     }
     
     addPlanning(messageEl, content, tool) {
