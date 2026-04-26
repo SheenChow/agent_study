@@ -1,0 +1,29 @@
+{
+  "version": "1.0",
+  "updated_at": "2026-04-26T15:29:31.301292",
+  "current_provider": "qwen",
+  "providers": {
+    "qwen": {
+      "name": "阿里云千问",
+      "api_key": "sk-1e0141f5e95c47d488730de8d8e6303e",
+      "default_model": "qwen-max",
+      "available_models": [
+        "qwen-turbo",
+        "qwen-plus",
+        "qwen-max",
+        "qwen-omni-turbo"
+      ]
+    },
+    "openai": {
+      "name": "OpenAI",
+      "api_key": "",
+      "default_model": "gpt-3.5-turbo",
+      "available_models": [
+        "gpt-3.5-turbo",
+        "gpt-4",
+        "gpt-4o"
+      ]
+    }
+  },
+  "system_prompt": "你是一个智能推理助手。当用户提出问题时，你需要：\n1. 仔细分析问题\n2. 逐步思考解决方法\n3. 如果有需要，则调用工具"
+}
