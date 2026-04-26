@@ -36,6 +36,12 @@ logs/
 .env.local
 .env.*.local
 
+# 配置文件（包含敏感信息，如 API Key）
+data/config.json
+
+# 数据库文件（可能包含会话数据）
+data/*.db
+
 # 虚拟环境
 .venv/
 venv/
