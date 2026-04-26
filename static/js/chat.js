@@ -10,6 +10,7 @@ class ChatApp {
         this.isLoading = false;
         this.currentModel = null;
         this.currentProvider = null;
+        this.currentEventSource = null;
         
         this.initElements();
         this.initEventListeners();
@@ -23,6 +24,7 @@ class ChatApp {
         this.sendText = document.getElementById('send-text');
         this.sendIcon = document.getElementById('send-icon');
         this.loadingIcon = document.getElementById('loading-icon');
+        this.stopBtn = document.getElementById('stop-btn');
         this.messagesContainer = document.getElementById('messages');
         this.chatContainer = document.getElementById('chat-container');
         this.modelInfo = document.getElementById('model-info');
@@ -50,6 +52,8 @@ class ChatApp {
         });
         
         this.newChatBtn.addEventListener('click', () => this.createNewSession());
+        
+        this.stopBtn.addEventListener('click', () => this.stopGeneration());
         
         document.querySelectorAll('.quick-question').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -86,7 +90,7 @@ class ChatApp {
                 this.sessions = data.data || [];
                 this.renderSessionList();
                 
-                if (this.sessions.length > 0) {
+                if (this.sessions.length > 0 && !this.currentSessionId) {
                     const lastSession = this.sessions[0];
                     this.switchSession(lastSession.id);
                 }
@@ -126,6 +130,8 @@ class ChatApp {
         const updatedAt = new Date(session.updated_at);
         const timeStr = this.formatTime(updatedAt);
         
+        const messageCount = typeof session.message_count === 'number' ? session.message_count : 0;
+        
         div.innerHTML = `
             <div class="flex items-start justify-between">
                 <div class="flex-1 min-w-0">
@@ -135,9 +141,9 @@ class ChatApp {
                         </svg>
                         <span class="text-sm text-gray-700 truncate">${this.escapeHtml(displayTitle)}</span>
                     </div>
-                    <div class="text-xs text-gray-400 mt-1 ml-6">${timeStr} · ${session.message_count || 0} 条消息</div>
+                    <div class="text-xs text-gray-400 mt-1 ml-6">${timeStr} · ${messageCount} 条消息</div>
                 </div>
-                <button class="session-delete-btn p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors opacity-0 group-hover:opacity-100" title="删除会话">
+                <button class="session-delete-btn p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors opacity-0 group-hover:opacity-100" title="删除会话" data-session-id="${session.id}">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                     </svg>
@@ -146,9 +152,13 @@ class ChatApp {
         `;
         
         div.addEventListener('click', (e) => {
-            if (e.target.closest('.session-delete-btn')) {
+            const deleteBtn = e.target.closest('.session-delete-btn');
+            if (deleteBtn) {
                 e.stopPropagation();
-                this.deleteSession(session.id);
+                const sessionIdToDelete = deleteBtn.dataset.sessionId;
+                if (confirm('确定要删除这个对话吗？')) {
+                    this.deleteSession(sessionIdToDelete);
+                }
             } else {
                 this.switchSession(session.id);
             }
@@ -176,6 +186,14 @@ class ChatApp {
     }
     
     async createNewSession() {
+        if (this.isLoading) {
+            if (confirm('当前有正在进行的对话，确定要新建对话吗？这将停止当前的生成。')) {
+                this.stopGeneration();
+            } else {
+                return;
+            }
+        }
+        
         try {
             const response = await fetch('/api/sessions', {
                 method: 'POST',
@@ -201,12 +219,16 @@ class ChatApp {
     }
     
     async switchSession(sessionId) {
-        if (this.isLoading) {
+        if (this.currentSessionId === sessionId) {
             return;
         }
         
-        if (this.currentSessionId === sessionId) {
-            return;
+        if (this.isLoading) {
+            if (confirm('当前有正在进行的对话，确定要切换吗？这将停止当前的生成。')) {
+                this.stopGeneration();
+            } else {
+                return;
+            }
         }
         
         this.currentSessionId = sessionId;
@@ -240,10 +262,6 @@ class ChatApp {
     }
     
     async deleteSession(sessionId) {
-        if (!confirm('确定要删除这个对话吗？')) {
-            return;
-        }
-        
         try {
             const response = await fetch(`/api/sessions/${sessionId}`, {
                 method: 'DELETE'
@@ -271,6 +289,14 @@ class ChatApp {
             console.error('删除会话失败:', error);
             this.showToast('删除会话失败', 'error');
         }
+    }
+    
+    stopGeneration() {
+        if (this.currentEventSource) {
+            this.currentEventSource.close();
+            this.currentEventSource = null;
+        }
+        this.setLoading(false);
     }
     
     showWelcomeMessage() {
@@ -307,10 +333,14 @@ class ChatApp {
             this.sendText.textContent = '思考中...';
             this.sendIcon.classList.add('hidden');
             this.loadingIcon.classList.remove('hidden');
+            this.sendBtn.classList.add('hidden');
+            this.stopBtn.classList.remove('hidden');
         } else {
             this.sendText.textContent = '发送';
             this.sendIcon.classList.remove('hidden');
             this.loadingIcon.classList.add('hidden');
+            this.sendBtn.classList.remove('hidden');
+            this.stopBtn.classList.add('hidden');
         }
     }
     
@@ -323,11 +353,33 @@ class ChatApp {
         }
         
         if (this.isLoading) {
+            this.stopGeneration();
             return;
         }
         
         if (!this.currentSessionId) {
-            await this.createNewSession();
+            try {
+                const response = await fetch('/api/sessions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ title: message.length > 30 ? message.substring(0, 30) : message })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    const newSession = data.data;
+                    this.currentSessionId = newSession.id;
+                    this.sessions.unshift(newSession);
+                    this.renderSessionList();
+                }
+            } catch (error) {
+                console.error('创建会话失败:', error);
+                this.showToast('创建会话失败', 'error');
+                return;
+            }
         }
         
         this.hideWelcomeMessage();
@@ -352,6 +404,8 @@ class ChatApp {
             const eventSource = new EventSource(
                 `/api/chat/stream?message=${messageParam}${sessionParam}`
             );
+            
+            this.currentEventSource = eventSource;
             
             eventSource.onmessage = (event) => {
                 try {
@@ -407,6 +461,7 @@ class ChatApp {
                             
                         case 'done':
                             eventSource.close();
+                            this.currentEventSource = null;
                             this.setLoading(false);
                             
                             if (data.usage) {
@@ -418,6 +473,7 @@ class ChatApp {
                             
                         case 'error':
                             eventSource.close();
+                            this.currentEventSource = null;
                             this.updateMessageContent(assistantMessageEl, `❌ 错误: ${data.content}`);
                             this.setLoading(false);
                             this.showToast(data.content, 'error');
@@ -431,6 +487,7 @@ class ChatApp {
             eventSource.onerror = (error) => {
                 console.error('SSE连接错误:', error);
                 eventSource.close();
+                this.currentEventSource = null;
                 
                 if (!fullContent) {
                     this.updateMessageContent(assistantMessageEl, '❌ 连接失败，请检查网络或API配置');
