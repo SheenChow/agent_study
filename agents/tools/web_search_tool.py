@@ -2,26 +2,34 @@
 """
 网络搜索工具模块
 提供互联网搜索能力，用于获取实时信息
+支持 Brave Search API 和模拟数据模式
 """
 
 import json
 import os
+import urllib.parse
 from typing import Any, Dict, List, Optional
 
 from agents.tools.base_tool import BaseTool, ToolResult
 
 
+BRAVE_API_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+
+
 class WebSearchTool(BaseTool):
     """
     网络搜索工具
-    使用搜索引擎获取互联网实时信息
+    使用 Brave Search API 获取互联网实时信息
+    配置方式：
+    - 设置 BRAVE_API_KEY 环境变量
+    - 免费注册地址：https://brave.com/search/api/
     """
     
     name = "web_search"
     description = (
         "在互联网上搜索最新的实时信息。"
         "用于回答时效性强的问题，如：新闻、天气、体育赛事、当前事件、股票价格等。"
-        "当问题涉及'最新'、'今天'、'现在'、'近期'等时效性词汇时，应使用此工具。"
+        "当问题涉及'最新'、'今天'、'现在'、'近期'、'当前'等时效性词汇时，应使用此工具。"
         "对于常识性问题或历史知识，可以不使用此工具。"
     )
     parameters = {
@@ -43,6 +51,12 @@ class WebSearchTool(BaseTool):
     def __init__(self):
         self._search_results_cache: Dict[str, Any] = {}
         self._use_mock = os.getenv("USE_MOCK_SEARCH", "true").lower() == "true"
+        self._brave_api_key = os.getenv("BRAVE_API_KEY", "")
+        self._api_available = bool(self._brave_api_key)
+        
+        if not self._use_mock and not self._api_available:
+            print("⚠️  未配置 BRAVE_API_KEY，将使用模拟搜索数据")
+            self._use_mock = True
     
     def execute(self, query: str, num_results: int = 5) -> ToolResult:
         """
@@ -59,9 +73,11 @@ class WebSearchTool(BaseTool):
             num = min(max(num_results, 1), 10)
             
             if self._use_mock:
+                print(f"🔍 使用模拟搜索: {query}")
                 results = self._mock_search(query)
             else:
-                results = self._do_search(query, num)
+                print(f"🔍 调用 Brave Search API: {query}")
+                results = self._brave_search(query, num)
             
             if results and len(results) > 0:
                 formatted_results = self._format_results(results)
@@ -83,15 +99,17 @@ class WebSearchTool(BaseTool):
                 )
                 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return ToolResult(
                 success=False,
                 content="",
                 error=f"搜索失败: {str(e)}"
             )
     
-    def _do_search(self, query: str, num_results: int) -> List[Dict[str, Any]]:
+    def _brave_search(self, query: str, num_results: int) -> List[Dict[str, Any]]:
         """
-        执行实际搜索
+        使用 Brave Search API 进行搜索
         
         Args:
             query: 搜索关键词
@@ -100,51 +118,72 @@ class WebSearchTool(BaseTool):
         Returns:
             搜索结果列表
         """
-        try:
-            search_results = self._search_with_sub_agent(query, num_results)
-            return self._parse_search_results(search_results)
-        except Exception as e:
-            print(f"⚠️  搜索工具调用失败: {e}，使用模拟数据")
-            return self._mock_search(query)
-    
-    def _search_with_sub_agent(self, query: str, num_results: int) -> List[Dict[str, Any]]:
-        """
-        使用 search 子代理工具进行搜索
+        import requests
         
-        Args:
-            query: 搜索关键词
-            num_results: 结果数量
-            
-        Returns:
-            搜索结果列表
-        """
+        headers = {
+            "Accept": "application/json",
+            "x-subscription-token": self._brave_api_key
+        }
+        
+        params = {
+            "q": query,
+            "count": num_results
+        }
+        
         try:
-            from search import search as sub_agent_search
-            
-            result = sub_agent_search(
-                query=f"搜索关于 {query} 的最新信息",
-                response_language="中文"
+            response = requests.get(
+                BRAVE_API_ENDPOINT,
+                headers=headers,
+                params=params,
+                timeout=15
             )
             
-            if result:
-                return [
-                    {
-                        "title": f"搜索结果: {query}",
-                        "url": "https://search.example.com",
-                        "snippet": str(result) if isinstance(result, str) else json.dumps(result, ensure_ascii=False),
-                        "source": "子代理搜索"
-                    }
-                ]
-        except ImportError:
-            pass
-        except Exception as e:
-            print(f"⚠️  子代理搜索失败: {e}")
+            if response.status_code == 200:
+                data = response.json()
+                return self._parse_brave_results(data)
+            elif response.status_code == 401:
+                print("⚠️  Brave API Key 无效或已过期，使用模拟数据")
+                self._use_mock = True
+                return self._mock_search(query)
+            else:
+                print(f"⚠️  Brave API 返回错误: {response.status_code} - {response.text}")
+                return self._mock_search(query)
+                
+        except requests.exceptions.RequestException as e:
+            print(f"⚠️  Brave API 请求失败: {e}，使用模拟数据")
+            return self._mock_search(query)
+    
+    def _parse_brave_results(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        解析 Brave Search API 返回的结果
         
-        return self._mock_search(query)
+        Args:
+            data: API 返回的 JSON 数据
+            
+        Returns:
+            标准化的搜索结果列表
+        """
+        results = []
+        
+        web_results = data.get("web", {}).get("results", [])
+        
+        for idx, item in enumerate(web_results):
+            result = {
+                "title": item.get("title", f"搜索结果 {idx + 1}"),
+                "url": item.get("url", ""),
+                "snippet": item.get("description", ""),
+                "source": item.get("profile", {}).get("name", "网络搜索"),
+                "page_age": item.get("page_age", "")
+            }
+            
+            if result.get("title") or result.get("snippet"):
+                results.append(result)
+        
+        return results
     
     def _parse_search_results(self, search_results) -> List[Dict[str, Any]]:
         """
-        解析搜索结果
+        解析搜索结果（兼容旧代码）
         
         Args:
             search_results: 搜索工具返回的结果
@@ -207,6 +246,8 @@ class WebSearchTool(BaseTool):
             lines.append(f"\n【结果 {idx}】{result.get('title', '无标题')}")
             if result.get('url'):
                 lines.append(f"来源: {result['url']}")
+            if result.get('page_age'):
+                lines.append(f"时间: {result['page_age']}")
             if result.get('snippet'):
                 snippet = result['snippet']
                 if len(snippet) > 500:
@@ -240,7 +281,8 @@ class WebSearchTool(BaseTool):
                         "自动驾驶技术进入商业化阶段，量子计算在特定领域实现实用化。"
                         "AI Agent技术成为热点，越来越多的企业开始部署智能代理系统。"
                     ),
-                    "source": "科技日报"
+                    "source": "科技日报",
+                    "page_age": "2026-04-20"
                 },
                 {
                     "title": "2026年全球经济展望",
@@ -250,7 +292,8 @@ class WebSearchTool(BaseTool):
                         "科技、清洁能源、医疗健康是增长最快的三个行业。"
                         "各国央行货币政策逐步回归常态化，利率环境趋于稳定。"
                     ),
-                    "source": "经济观察报"
+                    "source": "经济观察报",
+                    "page_age": "2026-04-15"
                 }
             ],
             "ai": [
@@ -262,7 +305,38 @@ class WebSearchTool(BaseTool):
                         "开源模型性能持续提升，与闭源模型的差距逐渐缩小。"
                         "AI安全和对齐研究受到更多关注，监管框架逐步完善。"
                     ),
-                    "source": "AI研究周刊"
+                    "source": "AI研究周刊",
+                    "page_age": "2026-04-25"
+                }
+            ],
+            "deepseek": [
+                {
+                    "title": "DeepSeek V4 模型评测报告",
+                    "url": "https://ai-benchmark.example.com/deepseek-v4",
+                    "snippet": (
+                        "DeepSeek V4 是深度求索公司于2025年底发布的新一代开源大模型。"
+                        "在多项基准测试中，DeepSeek V4 的表现接近甚至超过部分闭源模型。"
+                        "在 MMLU、HumanEval 等评测中，DeepSeek V4 在开源模型中处于领先水平。"
+                        "特别是在代码生成、数学推理等任务上表现优异。"
+                        "与 Llama 3、Mistral 等其他开源模型相比，DeepSeek V4 在中文理解能力上具有明显优势。"
+                    ),
+                    "source": "AI基准测试",
+                    "page_age": "2026-04-10"
+                },
+                {
+                    "title": "2026年开源大模型排行榜",
+                    "url": "https://open-llm-leaderboard.example.com",
+                    "snippet": (
+                        "根据 Open LLM Leaderboard 2026年4月数据，开源大模型排名如下："
+                        "1. Llama 3.1 405B (Meta) - 综合第一"
+                        "2. DeepSeek V4 70B (深度求索) - 中文能力第一，综合第二"
+                        "3. Mistral Large 2 (Mistral AI) - 多模态能力强"
+                        "4. Qwen 2.5 72B (阿里云) - 中文能力出色"
+                        "5. Phi 3 Medium (Microsoft) - 小模型性能强劲"
+                        "DeepSeek V4 在代码生成和数学推理任务上表现突出，是目前最优秀的开源模型之一。"
+                    ),
+                    "source": "HuggingFace Open LLM Leaderboard",
+                    "page_age": "2026-04-22"
                 }
             ],
             "天气": [
@@ -274,7 +348,8 @@ class WebSearchTool(BaseTool):
                         "华北地区气温15-25°C，华东地区18-28°C，华南地区22-32°C。"
                         "建议外出时注意防晒，早晚温差较大请适时增减衣物。"
                     ),
-                    "source": "气象台"
+                    "source": "气象台",
+                    "page_age": "2026-04-26"
                 }
             ],
             "新闻": [
@@ -287,7 +362,8 @@ class WebSearchTool(BaseTool):
                         "【国际】多国签署气候变化合作协议"
                         "【体育】世界杯预选赛激战正酣"
                     ),
-                    "source": "新闻头条"
+                    "source": "新闻头条",
+                    "page_age": "2026-04-26"
                 }
             ]
         }
@@ -303,9 +379,10 @@ class WebSearchTool(BaseTool):
                 "snippet": (
                     f"搜索关键词: {query}\n"
                     "这是一个模拟的搜索结果。\n"
-                    "在实际部署中，这里会显示真实的网络搜索结果。\n"
+                    "要使用真实搜索，请配置 BRAVE_API_KEY 环境变量。\n"
                     "工具调用框架已成功工作，LLM可以根据需要调用此工具获取实时信息。"
                 ),
-                "source": "模拟搜索"
+                "source": "模拟搜索",
+                "page_age": "2026-04-26"
             }
         ]

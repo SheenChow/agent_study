@@ -10,5 +10,8 @@ dashscope>=1.10.0
 # 用于读取环境变量
 python-dotenv>=1.0.0
 
+# HTTP请求库（用于搜索API）
+requests>=2.28.0
+
 # OpenAI SDK (可选，用于OpenAI模型)
 # openai>=1.0.0

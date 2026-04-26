@@ -43,7 +43,7 @@ class ConfigManager:
             "qwen": {
                 "name": "阿里云千问",
                 "api_key": "",
-                "default_model": "qwen-turbo",
+                "default_model": "qwen-max",
                 "available_models": ["qwen-turbo", "qwen-plus", "qwen-max", "qwen-omni-turbo"]
             },
             "openai": {
