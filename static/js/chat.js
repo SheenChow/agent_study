@@ -1,5 +1,6 @@
 /**
  * Agent 推理助手 - 前端聊天逻辑
+ * 支持工具调用可视化
  */
 
 class ChatApp {
@@ -125,12 +126,22 @@ class ChatApp {
             );
             
             let fullContent = '';
+            let toolStatusDiv = null;
             
             eventSource.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
                     
-                    if (data.type === 'text' && data.content) {
+                    if (data.type === 'tool_call') {
+                        toolStatusDiv = this.addToolStatus(assistantMessageEl, 'calling', data.tool, data.query);
+                    } else if (data.type === 'tool_result') {
+                        if (toolStatusDiv) {
+                            this.updateToolStatus(toolStatusDiv, 'done', data.tool, data.success, data.result_count);
+                        }
+                    } else if (data.type === 'text' && data.content) {
+                        if (toolStatusDiv && !fullContent) {
+                            this.addSeparator(assistantMessageEl);
+                        }
                         fullContent += data.content;
                         this.updateMessageContent(assistantMessageEl, fullContent);
                     } else if (data.type === 'done') {
@@ -175,6 +186,107 @@ class ChatApp {
         }
     }
     
+    addToolStatus(messageEl, status, toolName, query) {
+        const bubbleDiv = messageEl.querySelector('.message-bubble');
+        if (!bubbleDiv) return null;
+        
+        let statusContainer = bubbleDiv.querySelector('.tool-status-container');
+        if (!statusContainer) {
+            statusContainer = document.createElement('div');
+            statusContainer.className = 'tool-status-container';
+            const contentDiv = bubbleDiv.querySelector('.message-content');
+            if (contentDiv) {
+                bubbleDiv.insertBefore(statusContainer, contentDiv);
+            } else {
+                bubbleDiv.appendChild(statusContainer);
+            }
+        }
+        
+        const toolDiv = document.createElement('div');
+        toolDiv.className = 'tool-status-item mb-2 p-2 bg-gray-50 rounded-lg border border-gray-200';
+        
+        let iconHtml = '';
+        let statusText = '';
+        
+        if (toolName === 'web_search') {
+            iconHtml = `<svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>`;
+            statusText = `正在搜索: "${query}"`;
+        } else {
+            iconHtml = `<svg class="w-4 h-4 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+            </svg>`;
+            statusText = `正在调用工具: ${toolName}`;
+        }
+        
+        toolDiv.innerHTML = `
+            <div class="flex items-center space-x-2">
+                <div class="flex-shrink-0">
+                    ${iconHtml}
+                </div>
+                <div class="flex-1 min-w-0">
+                    <p class="text-sm text-gray-600 truncate">
+                        <span class="inline-flex items-center">
+                            <span class="animate-pulse mr-1">🔄</span>
+                            ${statusText}
+                        </span>
+                    </p>
+                </div>
+            </div>
+        `;
+        
+        statusContainer.appendChild(toolDiv);
+        this.scrollToBottom();
+        
+        return toolDiv;
+    }
+    
+    updateToolStatus(toolDiv, status, toolName, success, resultCount) {
+        if (!toolDiv) return;
+        
+        let iconHtml = '';
+        let statusText = '';
+        
+        if (success) {
+            iconHtml = `<svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+            </svg>`;
+            statusText = `搜索完成，找到 ${resultCount} 条结果`;
+        } else {
+            iconHtml = `<svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>`;
+            statusText = `工具执行失败`;
+        }
+        
+        const pElement = toolDiv.querySelector('p');
+        if (pElement) {
+            pElement.innerHTML = `<span class="inline-flex items-center">${iconHtml}<span class="ml-1">${statusText}</span></span>`;
+            pElement.className = 'text-sm ' + (success ? 'text-green-600' : 'text-red-600');
+        }
+        
+        this.scrollToBottom();
+    }
+    
+    addSeparator(messageEl) {
+        const bubbleDiv = messageEl.querySelector('.message-bubble');
+        if (!bubbleDiv) return;
+        
+        const separator = document.createElement('div');
+        separator.className = 'my-2 border-t border-gray-200';
+        separator.innerHTML = '<div class="text-center text-xs text-gray-400 my-1">— 搜索结果 —</div>';
+        
+        const contentDiv = bubbleDiv.querySelector('.message-content');
+        if (contentDiv) {
+            const statusContainer = bubbleDiv.querySelector('.tool-status-container');
+            if (statusContainer) {
+                bubbleDiv.insertBefore(separator, contentDiv);
+            }
+        }
+    }
+    
     addMessage(role, content) {
         const messageDiv = document.createElement('div');
         messageDiv.className = `message-appear ${role === 'user' ? 'flex justify-end' : 'flex justify-start'}`;
@@ -182,10 +294,10 @@ class ChatApp {
         const bubbleDiv = document.createElement('div');
         
         if (role === 'user') {
-            bubbleDiv.className = 'max-w-[80%] bg-blue-600 text-white rounded-2xl rounded-tr-sm px-4 py-3 shadow-sm';
+            bubbleDiv.className = 'message-bubble max-w-[80%] bg-blue-600 text-white rounded-2xl rounded-tr-sm px-4 py-3 shadow-sm';
             bubbleDiv.innerHTML = this.escapeHtml(content);
         } else {
-            bubbleDiv.className = 'max-w-[80%] bg-white text-gray-800 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm border border-gray-200';
+            bubbleDiv.className = 'message-bubble max-w-[80%] bg-white text-gray-800 rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm border border-gray-200';
             
             const headerDiv = document.createElement('div');
             headerDiv.className = 'flex items-center space-x-2 mb-1';
