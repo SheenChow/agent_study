@@ -15,8 +15,12 @@ from agents.llm_agent import (
     get_llm_service, 
     LLMService,
     ChatMessage,
-    StreamChunk
+    StreamChunk,
+    AgentWithTools,
+    AgentStep,
+    DEFAULT_SYSTEM_PROMPT_WITH_TOOLS
 )
+from agents.tools.tool_manager import get_tool_manager, register_default_tools
 
 
 app = Flask(__name__)
@@ -31,7 +35,9 @@ def init_app():
     """初始化应用"""
     global config_manager
     config_manager = get_config_manager()
+    register_default_tools()
     print("✅ Agent Web 应用初始化完成")
+    print(f"✅ 已注册工具: {get_tool_manager().list_tools()}")
 
 
 @app.route('/')
@@ -231,7 +237,7 @@ def chat():
 
 @app.route('/api/chat/stream', methods=['GET'])
 def chat_stream():
-    """流式输出接口 (SSE)"""
+    """流式输出接口 (SSE) - 支持工具调用"""
     try:
         session_id = request.args.get('session_id')
         
@@ -257,43 +263,76 @@ def chat_stream():
         
         user_message = request.args.get('message', '')
         
-        messages = []
+        history = []
         for item in messages_data:
-            messages.append(ChatMessage(
+            history.append(ChatMessage(
                 role=item.get('role', 'user'),
                 content=item.get('content', '')
             ))
-        
-        if user_message:
-            messages.append(ChatMessage(role='user', content=user_message))
         
         service = get_llm_service(
             provider=app_config.current_provider,
             api_key=provider_config.api_key
         )
         
+        tool_manager = get_tool_manager()
+        
+        system_prompt = DEFAULT_SYSTEM_PROMPT_WITH_TOOLS
+        
         def generate():
             try:
-                stream = service.chat(
-                    messages=messages,
+                events = []
+                import re
+                
+                def capture_step(step: AgentStep):
+                    if step.step_type == "tool_call":
+                        events.append({
+                            "type": "tool_call",
+                            "tool": step.tool_name,
+                            "query": step.tool_arguments.get("query", "") if step.tool_arguments else "",
+                            "arguments": step.tool_arguments
+                        })
+                    elif step.step_type == "tool_result":
+                        result_count = 5
+                        if step.tool_result:
+                            match = re.search(r'共[（(]\s*(\d+)\s*[)）]\s*条', step.tool_result)
+                            if match:
+                                result_count = int(match.group(1))
+                        
+                        events.append({
+                            "type": "tool_result",
+                            "tool": step.tool_name,
+                            "success": "错误" not in (step.tool_result or ""),
+                            "result_count": result_count
+                        })
+                
+                agent = AgentWithTools(
+                    llm_service=service,
                     model=provider_config.default_model,
-                    stream=True,
-                    system_prompt=app_config.system_prompt
+                    system_prompt=system_prompt,
+                    tool_manager=tool_manager
                 )
                 
-                for chunk in stream:
-                    response_data = {
-                        "type": chunk.type,
-                        "content": chunk.content,
-                        "done": chunk.done
-                    }
+                result = agent.chat(
+                    user_message=user_message,
+                    history=history,
+                    step_callback=capture_step
+                )
+                
+                for event in events:
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                
+                if result.success:
+                    for char in result.final_answer:
+                        yield f"data: {json.dumps({'type': 'text', 'content': char, 'done': False}, ensure_ascii=False)}\n\n"
                     
-                    if chunk.usage:
-                        response_data["usage"] = chunk.usage
-                    
-                    yield f"data: {json.dumps(response_data, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'content': '', 'done': True, 'usage': result.usage}, ensure_ascii=False)}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'content': result.error_message or '执行失败', 'done': True}, ensure_ascii=False)}\n\n"
                     
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 error_data = {
                     "type": "error",
                     "content": str(e),
@@ -312,6 +351,8 @@ def chat_stream():
         )
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         def error_generator():
             error_data = {
                 "type": "error",
@@ -379,11 +420,14 @@ init_app()
 
 
 if __name__ == '__main__':
+    import os
+    port = int(os.environ.get('PORT', 8080))
+    
     print("=" * 50)
     print("🤖 Agent Web 应用启动中...")
     print("=" * 50)
-    print(f"📱 用户界面: http://localhost:5000/")
-    print(f"⚙️  后台管理: http://localhost:5000/admin")
+    print(f"📱 用户界面: http://localhost:{port}/")
+    print(f"⚙️  后台管理: http://localhost:{port}/admin")
     print("=" * 50)
     
-    app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
+    app.run(debug=True, host='0.0.0.0', port=port, threaded=True, use_reloader=False)
