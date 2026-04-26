@@ -868,3 +868,486 @@ data: {"type": "done", "usage": {"input_tokens": 100, "output_tokens": 50, "tota
 
 **文档状态**：✅ 规格说明已更新，包含工具调用功能
 **下一步**：开始实现工具调用功能代码
+
+---
+
+## 十六、流式输出与推理过程可视化优化规格 (新增 v1.1.0)
+
+### 16.1 问题背景
+
+当前实现存在两个关键问题：
+
+#### 问题1：伪流式输出
+**当前实现**：
+```python
+# app.py 中的当前逻辑
+result = agent.chat(...)  # 同步执行，等待整个过程完成
+
+# 然后批量输出所有事件
+for event in events:
+    yield event
+    
+# 再逐个输出最终答案的字符
+for char in result.final_answer:
+    yield text_event
+```
+
+**问题**：
+- 用户需要等待整个过程完成才能看到任何内容
+- 工具调用过程无法实时展示
+- 用户体验差，感觉像是"卡住了"
+
+#### 问题2：推理过程不透明
+**当前实现**：
+- 只展示了工具调用的最终状态
+- 没有展示 LLM 的思考过程
+- 没有展示 Agent 的规划过程
+- 用户无法判断答案是否基于真实搜索
+
+**用户诉求**：
+> "有些信息看起来不像是真实的，又无法判断是不是调用工具的结果"
+
+### 16.2 优化目标
+
+1. **真正的流式输出**：执行过程中实时推送事件
+2. **推理过程可视化**：展示完整的思考链（类似 ChatGPT 的思考过程）
+3. **用户可验证**：明确展示哪些部分基于工具调用结果
+
+### 16.3 事件类型扩展
+
+#### 16.3.1 新增事件类型
+
+| 事件类型 | 触发时机 | 描述 | 数据格式 |
+|----------|----------|------|----------|
+| `thinking` | LLM 开始推理时 | LLM 正在分析问题、判断是否需要工具 | `{"type": "thinking", "content": "正在分析问题..."}` |
+| `reasoning` | LLM 进行推理时 | LLM 的推理内容（如果支持流式 reasoning） | `{"type": "reasoning", "content": "推理内容..."}` |
+| `planning` | LLM 决定调用工具前 | LLM 决定需要调用工具，并规划如何调用 | `{"type": "planning", "content": "需要搜索最新信息...", "tool": "web_search"}` |
+| `tool_call` | 实际调用工具时 | 工具正在执行 | `{"type": "tool_call", "tool": "web_search", "query": "xxx"}` |
+| `tool_result` | 工具执行完成时 | 工具返回结果 | `{"type": "tool_result", "tool": "web_search", "success": true, "result_count": 5}` |
+| `text` | 输出最终答案时 | 最终答案的字符（流式） | `{"type": "text", "content": "x"}` |
+| `done` | 整个过程完成时 | 完成标志，包含 Token 使用统计 | `{"type": "done", "usage": {...}}` |
+
+#### 16.3.2 事件流示例
+
+**场景：需要调用工具的问题**
+
+```
+event: data
+data: {"type": "thinking", "content": "正在分析问题..."}
+
+event: data
+data: {"type": "planning", "content": "这个问题涉及实时信息，需要使用 web_search 工具搜索最新信息。", "tool": "web_search"}
+
+event: data
+data: {"type": "tool_call", "tool": "web_search", "query": "2026年AI大模型最新新闻"}
+
+event: data
+data: {"type": "tool_result", "tool": "web_search", "success": true, "result_count": 5}
+
+event: data
+data: {"type": "thinking", "content": "正在根据搜索结果生成回答..."}
+
+event: data
+data: {"type": "text", "content": "根"}
+
+event: data
+data: {"type": "text", "content": "据"}
+
+event: data
+data: {"type": "text", "content": "搜"}
+
+event: data
+data: {"type": "text", "content": "索"}
+
+...
+
+event: data
+data: {"type": "done", "usage": {"input_tokens": 500, "output_tokens": 200, "total_tokens": 700}}
+```
+
+**场景：不需要调用工具的问题**
+
+```
+event: data
+data: {"type": "thinking", "content": "正在分析问题..."}
+
+event: data
+data: {"type": "planning", "content": "这是一个常识性问题，可以直接回答。"}
+
+event: data
+data: {"type": "text", "content": "你"}
+
+event: data
+data: {"type": "text", "content": "好"}
+
+...
+
+event: data
+data: {"type": "done", "usage": {...}}
+```
+
+### 16.4 后端实现规格
+
+#### 16.4.1 数据流架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         用户请求                                  │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    AgentWithTools.chat_stream()                  │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  1. 发送 "thinking" 事件                                   │   │
+│  │  2. LLM 第一次调用（判断是否需要工具）                      │   │
+│  │  3. 发送 "planning" 事件（LLM 的决策）                     │   │
+│  │  4. 如果需要工具：                                          │   │
+│  │     ├─ 发送 "tool_call" 事件                               │   │
+│  │     ├─ 执行工具                                             │   │
+│  │     └─ 发送 "tool_result" 事件                             │   │
+│  │  5. LLM 第二次调用（根据工具结果生成回答）                   │   │
+│  │  6. 流式发送 "text" 事件（最终答案）                        │   │
+│  │  7. 发送 "done" 事件                                       │   │
+│  └─────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    SSE 实时推送事件                              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 16.4.2 核心接口设计
+
+**AgentWithTools.chat_stream()**
+
+```python
+@dataclass
+class StreamEvent:
+    """流式事件"""
+    event_type: str  # thinking, planning, tool_call, tool_result, text, done
+    content: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class AgentWithTools:
+    # ...
+    
+    def chat_stream(
+        self,
+        user_message: str,
+        history: List[ChatMessage] = None
+    ) -> Generator[StreamEvent, None, None]:
+        """
+        流式对话，实时推送事件
+        
+        Yields:
+            StreamEvent: 各个阶段的事件
+        """
+        messages = history.copy() if history else []
+        messages.append(ChatMessage(role="user", content=user_message))
+        
+        # 1. 发送 thinking 事件
+        yield StreamEvent(
+            event_type="thinking",
+            content="正在分析问题..."
+        )
+        
+        # 2. LLM 第一次调用：判断是否需要工具
+        result = self.llm_service.chat(
+            messages=messages,
+            tools=self.tool_manager.get_tools_definition()
+        )
+        
+        # 3. 发送 planning 事件
+        if result.tool_calls:
+            yield StreamEvent(
+                event_type="planning",
+                content="需要使用工具获取实时信息...",
+                metadata={"tool": result.tool_calls[0].get("function", {}).get("name")}
+            )
+            
+            # 4. 执行工具调用
+            for tool_call_data in result.tool_calls:
+                # 发送 tool_call 事件
+                tool_name = tool_call_data.get("function", {}).get("name")
+                args = json.loads(tool_call_data.get("function", {}).get("arguments", "{}"))
+                
+                yield StreamEvent(
+                    event_type="tool_call",
+                    content=f"正在调用 {tool_name}...",
+                    metadata={"tool": tool_name, "query": args.get("query", "")}
+                )
+                
+                # 执行工具
+                tool_result = self.tool_manager.execute_tool(tool_name, **args)
+                
+                # 发送 tool_result 事件
+                yield StreamEvent(
+                    event_type="tool_result",
+                    content=f"{tool_name} 执行完成",
+                    metadata={
+                        "tool": tool_name,
+                        "success": tool_result.success,
+                        "result_count": len(tool_result.metadata.get("results", []))
+                    }
+                )
+                
+                # 添加工具消息到历史
+                tool_msg = ChatMessage(
+                    role="tool",
+                    content=tool_result.content if tool_result.success else json.dumps({"error": tool_result.error}),
+                    tool_call_id=tool_call_data.get("id"),
+                    name=tool_name
+                )
+                messages.append(tool_msg)
+            
+            # 5. 发送 thinking 事件（准备生成最终答案）
+            yield StreamEvent(
+                event_type="thinking",
+                content="正在根据搜索结果生成回答..."
+            )
+            
+            # 6. LLM 第二次调用：流式生成最终答案
+            for chunk in self.llm_service.chat_stream(
+                messages=messages
+            ):
+                if chunk.content:
+                    yield StreamEvent(
+                        event_type="text",
+                        content=chunk.content
+                    )
+        else:
+            # 不需要工具，直接流式生成回答
+            yield StreamEvent(
+                event_type="planning",
+                content="这是一个常识性问题，可以直接回答。"
+            )
+            
+            for chunk in self.llm_service.chat_stream(
+                messages=messages
+            ):
+                if chunk.content:
+                    yield StreamEvent(
+                        event_type="text",
+                        content=chunk.content
+                    )
+        
+        # 7. 发送 done 事件
+        yield StreamEvent(
+            event_type="done",
+            content="",
+            metadata={"usage": total_usage}
+        )
+```
+
+### 16.5 前端展示规格
+
+#### 16.5.1 UI 设计
+
+**整体布局**：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  🤖 Agent 推理助手                                        [管理后台]│
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  [用户] 搜索2026年AI大模型最新新闻                        │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  🤖 Agent                                                 │   │
+│  │  ┌─────────────────────────────────────────────────┐    │   │
+│  │  │ 💭 正在分析问题...                                │    │   │  ← thinking
+│  │  └─────────────────────────────────────────────────┘    │   │
+│  │  ┌─────────────────────────────────────────────────┐    │   │
+│  │  │ 📋 规划：这个问题涉及实时信息，需要搜索最新数据    │    │   │  ← planning
+│  │  └─────────────────────────────────────────────────┘    │   │
+│  │  ┌─────────────────────────────────────────────────┐    │   │
+│  │  │ 🔍 正在搜索: "2026年AI大模型最新新闻"...         │    │   │  ← tool_call
+│  │  │    (加载动画)                                      │    │   │
+│  │  └─────────────────────────────────────────────────┘    │   │
+│  │  ┌─────────────────────────────────────────────────┐    │   │
+│  │  │ ✅ 搜索完成，找到 5 条结果                        │    │   │  ← tool_result
+│  │  └─────────────────────────────────────────────────┘    │   │
+│  │  ┌─────────────────────────────────────────────────┐    │   │
+│  │  │ 💭 正在根据搜索结果生成回答...                     │    │   │  ← thinking
+│  │  └─────────────────────────────────────────────────┘    │   │
+│  │  ───────────────────────────────────────────────────    │   │  ← 分隔线
+│  │  根据搜索结果，2026年AI领域的最新进展包括：             │    │   │
+│  │  1. 多模态模型能力大幅提升...                           │    │   │  ← 最终答案
+│  │  2. 自动驾驶技术商业化加速...                           │    │   │     (流式显示)
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────────────────────────────────────┐ [发送]   │
+│  │  输入你的问题...                                  │         │
+│  └─────────────────────────────────────────────────┘         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 16.5.2 事件处理逻辑
+
+```javascript
+class ChatApp {
+    // ...
+    
+    handleEvent(event) {
+        const data = JSON.parse(event.data);
+        
+        switch (data.type) {
+            case 'thinking':
+                this.showThinking(data.content);
+                break;
+                
+            case 'planning':
+                this.showPlanning(data.content, data.tool);
+                break;
+                
+            case 'tool_call':
+                this.showToolCall(data.tool, data.query);
+                break;
+                
+            case 'tool_result':
+                this.showToolResult(data.tool, data.success, data.result_count);
+                break;
+                
+            case 'text':
+                this.appendToAnswer(data.content);
+                break;
+                
+            case 'done':
+                this.showComplete(data.usage);
+                break;
+                
+            case 'error':
+                this.showError(data.content);
+                break;
+        }
+    }
+    
+    showThinking(content) {
+        // 添加思考状态，使用柔和的动画
+        const thinkingEl = this.createThinkingElement(content);
+        thinkingEl.style.opacity = '0.8';
+        this.assistantMessageEl.appendChild(thinkingEl);
+    }
+    
+    showPlanning(content, tool) {
+        // 展示规划内容，可展开查看详细推理
+        const planningEl = this.createPlanningElement(content, tool);
+        this.assistantMessageEl.appendChild(planningEl);
+    }
+    
+    showToolCall(tool, query) {
+        // 展示工具调用，带加载动画
+        const toolCallEl = this.createToolCallElement(tool, query);
+        this.assistantMessageEl.appendChild(toolCallEl);
+        toolCallEl.querySelector('.loading-icon').classList.add('spin');
+    }
+    
+    showToolResult(tool, success, resultCount) {
+        // 更新工具调用状态为完成
+        const toolResultEl = this.updateToolCallToComplete(tool, success, resultCount);
+        // 添加分隔线
+        this.addSeparator();
+    }
+    
+    appendToAnswer(content) {
+        // 流式追加到最终答案
+        this.finalAnswerEl.textContent += content;
+    }
+}
+```
+
+#### 16.5.3 样式规格
+
+**颜色方案**：
+- thinking: 浅灰背景 (#f3f4f6)，灰色文字
+- planning: 浅蓝背景 (#eff6ff)，蓝色文字
+- tool_call: 浅黄背景 (#fffbeb)，橙色文字 + 加载动画
+- tool_result: 浅绿背景 (#f0fdf4)，绿色文字
+- text: 正常文字颜色
+
+**动画效果**：
+- thinking: 淡入淡出
+- tool_call: 加载旋转动画
+- 状态切换: 平滑过渡
+
+### 16.6 关键实现点
+
+#### 16.6.1 真正的流式输出
+
+**核心改动**：
+1. `AgentWithTools.chat()` 改为生成器模式，实时 yield 事件
+2. `app.py` 中的 `chat_stream()` 直接转发事件，不再等待整个过程完成
+3. LLM 服务需要支持真正的流式调用
+
+**代码模式**：
+```python
+# 之前的方式（伪流式）
+def chat_stream():
+    result = agent.chat(...)  # 阻塞等待
+    for event in events:       # 批量输出
+        yield event
+
+# 新的方式（真正流式）
+def chat_stream():
+    for event in agent.chat_stream(...):  # 实时获取
+        yield event                          # 实时输出
+```
+
+#### 16.6.2 推理过程可验证
+
+**实现要点**：
+1. 每个事件都有明确的类型和内容
+2. 工具调用过程清晰可见（调用了什么工具、参数是什么、结果如何）
+3. 最终答案与工具调用之间有明确的分隔
+4. 用户可以清楚地看到：答案是否基于工具调用结果
+
+### 16.7 开发任务清单
+
+#### 阶段一：后端流式输出改造 (P0)
+- [ ] 16.7.1 实现 `AgentWithTools.chat_stream()` 生成器方法
+- [ ] 16.7.2 实现 `StreamEvent` 数据类
+- [ ] 16.7.3 修改 `app.py` 的 `chat_stream()` 支持真正流式
+- [ ] 16.7.4 确保 LLM 服务支持流式调用
+
+#### 阶段二：推理过程可视化 (P0)
+- [ ] 16.7.5 新增事件类型：thinking, planning
+- [ ] 16.7.6 优化 tool_call, tool_result 事件
+- [ ] 16.7.7 前端处理新事件类型
+- [ ] 16.7.8 设计并实现思考链 UI
+
+#### 阶段三：用户体验优化 (P1)
+- [ ] 16.7.9 添加动画和过渡效果
+- [ ] 16.7.10 优化移动端布局
+- [ ] 16.7.11 添加思考过程可折叠/展开功能
+
+### 16.8 验收标准
+
+#### 功能验收
+- [ ] 用户输入问题后，立即看到 "正在分析问题..."
+- [ ] 工具调用过程实时展示（调用什么工具、参数是什么）
+- [ ] 工具执行结果实时展示（成功/失败、结果数量）
+- [ ] 最终答案逐字流式显示
+- [ ] 整个过程没有明显的"卡顿"感
+
+#### 体验验收
+- [ ] 用户能清楚地看到：Agent 在思考什么
+- [ ] 用户能清楚地看到：Agent 调用了什么工具
+- [ ] 用户能清楚地看到：答案是否基于搜索结果
+- [ ] 整体流程流畅自然，类似 ChatGPT 的体验
+
+#### 代码验收
+- [ ] 后端使用真正的生成器模式
+- [ ] 事件类型定义清晰，易于扩展
+- [ ] 前端事件处理模块化
+- [ ] 代码注释完整
+
+---
+
+**文档状态**：✅ 优化规格已定义
+**下一步**：开始实现流式输出和推理过程可视化
