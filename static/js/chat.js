@@ -109,21 +109,80 @@ class ChatApp {
     }
     
     async loadSessions() {
+        console.log('[DEBUG] === loadSessions() 开始 ===');
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => {
+            console.error('[ERROR] loadSessions() 请求超时 (10秒)');
+            controller.abort();
+        }, 10000);
+        
         try {
-            const response = await fetch('/api/sessions');
-            const data = await response.json();
+            console.log('[DEBUG] 准备发送 fetch 请求...');
+            
+            const response = await fetch('/api/sessions', {
+                method: 'GET',
+                cache: 'no-store',
+                headers: {
+                    'Cache-Control': 'no-cache, no-store, must-revalidate',
+                    'Pragma': 'no-cache',
+                    'Expires': '0'
+                },
+                signal: controller.signal
+            });
+            
+            console.log('[DEBUG] fetch 响应收到, status:', response.status);
+            clearTimeout(timeoutId);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            console.log('[DEBUG] 准备解析 JSON...');
+            const text = await response.text();
+            console.log('[DEBUG] 原始响应文本:', text.substring(0, 200) + (text.length > 200 ? '...' : ''));
+            
+            let data;
+            try {
+                data = JSON.parse(text);
+            } catch (jsonError) {
+                console.error('[ERROR] JSON 解析失败:', jsonError);
+                throw jsonError;
+            }
+            
+            console.log('[DEBUG] 会话列表 API 返回:', data);
+            console.log('[DEBUG] API 返回的每个会话详情:');
+            if (data.data && data.data.length > 0) {
+                data.data.forEach((s, i) => {
+                    console.log(`  [${i}] id=${s.id}, title=${s.title}, message_count=${s.message_count}`);
+                });
+            }
             
             if (data.success) {
+                console.log('[DEBUG] 更新 this.sessions 之前:', this.sessions.map(s => ({id: s.id, message_count: s.message_count})));
                 this.sessions = data.data || [];
+                console.log('[DEBUG] 更新 this.sessions 之后:', this.sessions.map(s => ({id: s.id, message_count: s.message_count})));
+                
+                console.log('[DEBUG] 准备调用 renderSessionList()...');
                 this.renderSessionList();
+                console.log('[DEBUG] renderSessionList() 完成');
                 
                 if (this.sessions.length > 0 && !this.currentSessionId) {
                     const lastSession = this.sessions[0];
                     this.switchSession(lastSession.id);
                 }
             }
+            
+            console.log('[DEBUG] === loadSessions() 成功完成 ===');
+            
         } catch (error) {
-            console.error('加载会话列表失败:', error);
+            clearTimeout(timeoutId);
+            console.error('[ERROR] loadSessions() 失败:', error);
+            console.error('[ERROR] 错误类型:', error.name);
+            console.error('[ERROR] 错误消息:', error.message);
+            if (error.stack) {
+                console.error('[ERROR] 堆栈:', error.stack);
+            }
         }
     }
     
@@ -145,6 +204,9 @@ class ChatApp {
     }
     
     createSessionItem(session) {
+        console.log('[DEBUG] 创建会话项:', session);
+        console.log('[DEBUG] message_count 类型:', typeof session.message_count, '值:', session.message_count);
+        
         const div = document.createElement('div');
         div.className = `session-item p-2 rounded-lg cursor-pointer border border-transparent hover:bg-gray-50 transition-colors group ${
             this.currentSessionId === session.id ? 'active bg-blue-50 border-blue-200' : ''
@@ -158,6 +220,7 @@ class ChatApp {
         const timeStr = this.formatTime(updatedAt);
         
         const messageCount = typeof session.message_count === 'number' ? session.message_count : 0;
+        console.log('[DEBUG] 最终显示的消息数量:', messageCount);
         
         div.innerHTML = `
             <div class="flex items-start justify-between">
@@ -385,6 +448,19 @@ class ChatApp {
     async sendMessage() {
         const message = this.userInput.value.trim();
         
+        console.log('[DEBUG] === 开始发送消息 ===');
+        console.log('[DEBUG] 当前会话ID:', this.currentSessionId);
+        console.log('[DEBUG] 当前会话列表:', this.sessions);
+        
+        // 找到当前会话
+        if (this.currentSessionId) {
+            const currentSession = this.sessions.find(s => s.id === this.currentSessionId);
+            console.log('[DEBUG] 当前会话详情:', currentSession);
+            if (currentSession) {
+                console.log('[DEBUG] 发送前消息数量:', currentSession.message_count);
+            }
+        }
+        
         if (!message) {
             this.showToast('请输入问题', 'error');
             return;
@@ -498,6 +574,7 @@ class ChatApp {
                             break;
                             
                         case 'done':
+                            console.log('[DEBUG] 收到 done 事件，准备关闭连接并刷新会话列表');
                             eventSource.close();
                             this.currentEventSource = null;
                             this.setLoading(false);
@@ -506,7 +583,15 @@ class ChatApp {
                                 console.log('Token使用:', data.usage);
                             }
                             
-                            this.loadSessions();
+                            console.log('[DEBUG] 延迟 100ms 后调用 loadSessions()...');
+                            setTimeout(() => {
+                                console.log('[DEBUG] 现在调用 loadSessions() 刷新会话列表');
+                                this.loadSessions().then(() => {
+                                    console.log('[DEBUG] loadSessions() Promise 完成');
+                                }).catch((err) => {
+                                    console.error('[ERROR] loadSessions() Promise 失败:', err);
+                                });
+                            }, 100);
                             break;
                             
                         case 'error':
