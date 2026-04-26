@@ -1,11 +1,11 @@
 {
   "version": "1.0",
-  "updated_at": "2026-04-26T16:42:49.038630",
+  "updated_at": "",
   "current_provider": "qwen",
   "providers": {
     "qwen": {
       "name": "阿里云千问",
-      "api_key": "sk-1e0141f5e95c47d488730de8d8e6303e",
+      "api_key": "",
       "default_model": "qwen-plus",
       "available_models": [
         "qwen-turbo",

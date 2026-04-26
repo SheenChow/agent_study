@@ -332,12 +332,12 @@ class ConfigManager:
         )
     
     def _config_to_dict(self, config: AppConfig) -> Dict[str, Any]:
-        """将AppConfig转换为字典"""
+        """将AppConfig转换为字典（保存时不包含明文存储API Key）"""
         providers = {}
         for provider_id, provider_config in config.providers.items():
             providers[provider_id] = {
                 "name": provider_config.name,
-                "api_key": provider_config.api_key,
+                "api_key": "",
                 "default_model": provider_config.default_model,
                 "available_models": provider_config.available_models
             }
