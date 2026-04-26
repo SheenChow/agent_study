@@ -91,10 +91,10 @@ class ConfigManager:
         
         if env_dev_path.exists():
             print(f"✅ 从 .env-dev 加载环境变量")
-            load_dotenv(env_dev_path)
+            load_dotenv(env_dev_path, override=True)
         elif env_path.exists():
             print(f"✅ 从 .env 加载环境变量")
-            load_dotenv(env_path)
+            load_dotenv(env_path, override=True)
         else:
             print("⚠️ 未找到 .env-dev 或 .env 文件，使用默认配置")
     
